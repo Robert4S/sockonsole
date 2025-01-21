@@ -4,7 +4,7 @@ version = "0.1.0"
 edition = "2021"
 description = "Sockonsole is a basic utility to be used for running something like a shell in the background, and be able to connect and interact with it whenever you want, through unix sockets."
 license = "MIT OR Apache-2.0"
-documentation = "README.md"
+documentation = "https://github.com/Robert4S/sockonsole/blob/master/README.md"
 repository = "https://github.com/Robert4S/sockonsole"
 
 [dependencies]
