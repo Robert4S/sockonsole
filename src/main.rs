@@ -2,7 +2,7 @@ use std::{
     collections::HashMap,
     env,
     fs::{self},
-    io::{self, prelude::*, stdout, BufRead, BufReader, BufWriter},
+    io::{self, prelude::*, BufRead, BufReader, BufWriter},
     os::unix::net::{UnixListener, UnixStream},
     process::{Child, Command, Stdio},
     str,
