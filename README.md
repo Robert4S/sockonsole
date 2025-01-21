@@ -6,9 +6,9 @@ In a terminal, paste the following
 cargo install --locked sockonsole
 ```
 ## Usage
-`sockonsole start` this will start your command. This must be run first in order to connect to it.
-`sockonsole stop` will stop your command
-`sockonsole connect` will connect your terminal to the command running, allowing you to interact with it
+`sockonsole -a start` this will start your command. This must be run first in order to connect to it.
+`sockonsole -a stop` will stop your command
+`sockonsole -a connect` will connect your terminal to the command running, allowing you to interact with it
 ## Configuration
 Create your configuration file at `$HOME/.config/sockonsole/config.toml`
 And paste the following default configuration in
