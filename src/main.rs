@@ -1,7 +1,8 @@
 use std::{
     collections::HashMap,
-    fs,
-    io::{self, prelude::*, stdin, BufRead, BufReader, BufWriter},
+    env,
+    fs::{self},
+    io::{self, prelude::*, stdout, BufRead, BufReader, BufWriter},
     os::unix::net::{UnixListener, UnixStream},
     process::{Child, Command, Stdio},
     str,
@@ -15,7 +16,8 @@ use std::{
 
 use clap::Parser;
 
-use serde::Deserialize;
+use rustyline::{error::ReadlineError, history::FileHistory, Editor};
+use serde::{Deserialize, Serialize};
 
 #[derive(Parser, Debug)]
 struct Args {
@@ -23,7 +25,7 @@ struct Args {
     action: String,
 }
 
-#[derive(Deserialize, Clone)]
+#[derive(Deserialize, Clone, Serialize)]
 struct Config {
     command: String,
     response_timeout: u32,
@@ -32,10 +34,16 @@ struct Config {
 
 fn main() {
     let args = Args::parse();
+    let home = env::var("HOME").unwrap();
 
-    let config_file = fs::read_to_string("/home/robert/.config/sockonsole/config.toml").unwrap();
-
-    let config: Config = toml::from_str(&config_file).unwrap();
+    let config = match fs::read_to_string(format!("{home}/.config/sockonsole/config.toml")) {
+        Ok(s) => toml::from_str(&s).unwrap(),
+        Err(_) => Config {
+            command: "/bin/sh".into(),
+            response_timeout: 100,
+            env_vars: HashMap::new(),
+        },
+    };
 
     let (sender, reciever) = channel();
     if args.action == "start" {
@@ -53,10 +61,13 @@ fn main() {
 }
 
 fn start_socket() -> (UnixListener, UnixListener) {
-    let _ = fs::remove_file("/var/lib/remoteconsole_server.sock");
-    let _ = fs::remove_file("/var/lib/remoteconsole_client.sock");
-    let listener = UnixListener::bind("/var/lib/remoteconsole_server.sock").unwrap();
-    let listener2 = UnixListener::bind("/var/lib/remoteconsole_client.sock").unwrap();
+    let home = env::var("HOME").unwrap();
+    let _ = fs::remove_file(format!("{home}/.local/share/remoteconsole_server.sock"));
+    let _ = fs::remove_file(format!("{home}/.local/share/remoteconsole_client.sock"));
+    let listener =
+        UnixListener::bind(format!("{home}/.local/share/remoteconsole_server.sock")).unwrap();
+    let listener2 =
+        UnixListener::bind(format!("{home}/.local/share/remoteconsole_client.sock")).unwrap();
 
     (listener, listener2)
 }
@@ -117,8 +128,10 @@ fn handle_socket(
 }
 
 fn start_control_socket(tx: Sender<()>) -> UnixListener {
-    let _ = fs::remove_file("/var/lib/remoteconsole_control.sock");
-    let listener = UnixListener::bind("/var/lib/remoteconsole_control.sock").unwrap();
+    let home = env::var("HOME").unwrap();
+    let _ = fs::remove_file(format!("{home}/.local/share/remoteconsole_control.sock"));
+    let listener =
+        UnixListener::bind(format!("{home}/.local/share/remoteconsole_control.sock")).unwrap();
     let l_clone = listener.try_clone().unwrap();
     thread::spawn(move || {
         for stream in listener.incoming() {
@@ -146,13 +159,23 @@ fn handle_conn(
 ) {
     let mut stdin = child.stdin.take().unwrap();
     let stdout = child.stdout.take().unwrap();
+    let stderr = child.stderr.take().unwrap();
     let (txout, rxout) = channel();
 
+    let txout2 = txout.clone();
     spawn(move || {
         let reader = BufReader::new(stdout);
         for line in reader.lines() {
             let line = line.unwrap();
             txout.send(line).unwrap()
+        }
+    });
+
+    spawn(move || {
+        let reader = BufReader::new(stderr);
+        for line in reader.lines() {
+            let line = line.unwrap();
+            txout2.send(line).unwrap()
         }
     });
 
@@ -172,15 +195,16 @@ fn handle_conn(
                 Err(_e) => break,
             }
         }
-        if !resp.is_empty() {
-            serverout.write_all(resp.as_bytes()).unwrap();
-            serverout.write_all(b"\nEND_RESPONSE\n").unwrap();
-        }
+        serverout.write_all(resp.as_bytes()).unwrap();
+        serverout.write_all(b"\nEND_RESPONSE\n").unwrap();
     }
 }
 
 fn stop_socket() {
-    if let Ok(mut stream) = UnixStream::connect("/var/lib/remoteconsole_control.sock") {
+    let home = env::var("HOME").unwrap();
+    if let Ok(mut stream) =
+        UnixStream::connect(format!("{home}/.local/share/remoteconsole_control.sock"))
+    {
         stream.write_all(b"stop").unwrap();
     }
 }
@@ -210,22 +234,52 @@ fn read_until_sequence(reader: &mut impl BufRead, sequence: &[u8]) -> io::Result
 }
 
 fn connect_socket() {
-    let serverout = UnixStream::connect("/var/lib/remoteconsole_server.sock").unwrap();
-    let clientout = UnixStream::connect("/var/lib/remoteconsole_client.sock").unwrap();
+    let home = env::var("HOME").unwrap();
+    let serverout =
+        UnixStream::connect(format!("{home}/.local/share/remoteconsole_server.sock")).unwrap();
+    let clientout =
+        UnixStream::connect(format!("{home}/.local/share/remoteconsole_client.sock")).unwrap();
     let mut stream_writer = BufWriter::new(clientout);
     let mut stream_reader = BufReader::new(serverout);
-    let mut line = String::new();
-    let stdin = stdin();
-    loop {
-        line.clear();
-        let _ = stdin.read_line(&mut line).unwrap();
-        stream_writer.write_all(line.as_bytes()).unwrap();
-        let _ = stream_writer.flush();
-        let resp = read_until_sequence(&mut stream_reader, b"\nEND_RESPONSE\n").unwrap();
+    let home = env::var("HOME").expect("$HOME variable not set");
 
-        let resp2 = &resp[..(resp.len() - "\nEND_RESPONSE\n".len())];
+    let mut rl = Editor::<(), FileHistory>::new().unwrap();
 
-        let resp_text = str::from_utf8(resp2).unwrap();
-        println!("{resp_text}")
+    if rl
+        .load_history(&format!("{home}.config/sockonsole/history.txt"))
+        .is_err()
+    {
+        println!("No previous history.");
     }
+
+    loop {
+        let readline = rl.readline(">> ");
+        match readline {
+            Ok(mut line) => {
+                let _ = rl.add_history_entry(line.as_str());
+                line.push_str("\n");
+                stream_writer.write_all(line.as_bytes()).unwrap();
+                let _ = stream_writer.flush();
+                let resp = read_until_sequence(&mut stream_reader, b"\nEND_RESPONSE\n").unwrap();
+
+                let resp2 = &resp[..(resp.len() - "\nEND_RESPONSE\n".len())];
+
+                let resp_text = str::from_utf8(resp2).unwrap();
+                println!("{resp_text}");
+            }
+            Err(ReadlineError::Interrupted) => {
+                println!("CTRL-C");
+            }
+            Err(ReadlineError::Eof) => {
+                println!("CTRL-D");
+                break;
+            }
+            Err(err) => {
+                println!("Error: {:?}", err);
+                break;
+            }
+        }
+    }
+    rl.save_history(&format!("{home}/.config/sockonsole/history.txt"))
+        .expect("Couldnt save history file");
 }
